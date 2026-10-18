@@ -28,7 +28,7 @@ function setStatus(type, message = '') {
 }
 
 /**
- * Toggles disabled state of all actionable buttons.
+ * Toggles disabled state of all actionable buttons to prevent race conditions.
  * @param {boolean} disabled 
  */
 function setButtonsDisabled(disabled) {
@@ -76,6 +76,7 @@ function createNoteElement(note) {
   contentDiv.appendChild(heading);
   contentDiv.appendChild(paragraph);
 
+  // Delete button wired to send DELETE /posts/{id}
   const deleteBtn = document.createElement('button');
   deleteBtn.type = 'button';
   deleteBtn.className = 'delete-btn';
@@ -89,7 +90,8 @@ function createNoteElement(note) {
 }
 
 /**
- * Reusable fetch wrapper that checks response.ok and returns data along with HTTP status.
+ * Reusable fetch wrapper that checks response.ok and returns parsed data + status code.
+ * Safely handles empty response bodies (such as HTTP 204 or empty DELETE responses).
  * @param {string} url 
  * @param {RequestInit} [options={}] 
  * @returns {Promise<{ data: any, status: number }>}
@@ -101,7 +103,8 @@ async function request(url, options = {}) {
     throw new Error(`Request failed with status ${response.status}: ${response.statusText}`);
   }
 
-  const data = response.status === 204 ? null : await response.json();
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : null;
   return { data, status: response.status };
 }
 
@@ -145,7 +148,6 @@ async function createNote(event) {
   const title = titleInput.value.trim();
   const body = bodyInput.value.trim();
 
-  // Validation: Required and max 100 characters (body is optional)
   if (!title) {
     setStatus('error', 'Validation error: Title is required.');
     titleInput.focus();
@@ -159,7 +161,7 @@ async function createNote(event) {
   }
 
   setStatus('loading', 'Creating note...');
-  submitBtn.disabled = true;
+  setButtonsDisabled(true);
 
   try {
     const payload = { title, body, userId: 1 };
@@ -171,53 +173,73 @@ async function createNote(event) {
       body: JSON.stringify(payload)
     });
 
-    // Remove empty state message if present
+    // Remove empty-state message if present
     const emptyPlaceholder = notesList.querySelector('.empty-state');
     if (emptyPlaceholder) {
       emptyPlaceholder.remove();
     }
 
-    // Prepend new note to the top of the list
+    // Prepend created note to top of the list
     const noteElement = createNoteElement(createdNote);
     notesList.prepend(noteElement);
 
-    // Reset the form fields and show formatted success text
     noteForm.reset();
     setStatus('success', `Note created (status ${status}, id ${createdNote.id}).`);
   } catch (error) {
     setStatus('error', 'Failed to create note. Please try again.');
   } finally {
-    submitBtn.disabled = false;
+    setButtonsDisabled(false);
   }
 }
 
 /**
- * DELETE: Deletes an individual note by ID.
+ * DELETE: Sends DELETE /posts/{id} and removes the note on success.
+ * 
+ * APPROACH TO JSONPLACEHOLDER MOCK PERSISTENCE:
+ * JSONPlaceholder is a mock REST service that simulates mutations in memory per-request,
+ * meaning resources created via POST (e.g. id 101) are not actually stored in a persistent
+ * database.
+ * 
+ * However, JSONPlaceholder is specifically configured to mock successful REST calls:
+ * sending `DELETE /posts/{id}` for ANY id (including newly simulated IDs like 101)
+ * still returns HTTP 200 OK with an empty body `{}`.
+ * 
+ * Our approach:
+ * 1. Always fire the real HTTP DELETE request to preserve realistic network cycles, status
+ *    code checks (`response.ok`), and async state toggles.
+ * 2. Only remove the item from the local DOM once `request()` successfully completes.
+ * 3. If a network disruption occurs or the server returns an error status, the note is kept
+ *    in the UI and an error is reported to the user.
+ * 
  * @param {number|string} id 
  * @param {HTMLLIElement} noteElement 
  */
 async function deleteNote(id, noteElement) {
-  setStatus('loading', 'Deleting note...');
+  setStatus('loading', `Deleting note ${id}...`);
   setButtonsDisabled(true);
 
   try {
-    await request(`${API_URL}/${id}`, { method: 'DELETE' });
+    const { status } = await request(`${API_URL}/${id}`, {
+      method: 'DELETE'
+    });
 
+    // Remove the note element from the DOM
     noteElement.remove();
 
+    // Show empty state if all notes are gone
     if (notesList.children.length === 0) {
       renderEmptyState('No notes remaining.');
     }
 
-    setStatus('success', 'Note deleted successfully.');
+    setStatus('success', `Note ${id} deleted successfully (status ${status}).`);
   } catch (error) {
-    setStatus('error', 'Failed to delete note. Please try again.');
+    setStatus('error', `Failed to delete note ${id}. Please try again.`);
   } finally {
     setButtonsDisabled(false);
   }
 }
 
-// Initial empty state on page load
+// Initial state on page load
 renderEmptyState('Click "Load notes" to fetch data from the server.');
 
 // Event Listeners
