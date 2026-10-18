@@ -42,6 +42,7 @@ function setButtonsDisabled(disabled) {
 
 /**
  * Renders an empty-state message inside the list.
+ * @param {string} message 
  */
 function renderEmptyState(message = 'No notes available.') {
   notesList.textContent = '';
@@ -70,7 +71,7 @@ function createNoteElement(note) {
 
   const paragraph = document.createElement('p');
   paragraph.className = 'note-body';
-  paragraph.textContent = note.body;
+  paragraph.textContent = note.body || '';
 
   contentDiv.appendChild(heading);
   contentDiv.appendChild(paragraph);
@@ -88,10 +89,10 @@ function createNoteElement(note) {
 }
 
 /**
- * Reusable fetch wrapper with error handling and response validation.
+ * Reusable fetch wrapper that checks response.ok and returns data along with HTTP status.
  * @param {string} url 
  * @param {RequestInit} [options={}] 
- * @returns {Promise<any>}
+ * @returns {Promise<{ data: any, status: number }>}
  */
 async function request(url, options = {}) {
   const response = await fetch(url, options);
@@ -100,12 +101,8 @@ async function request(url, options = {}) {
     throw new Error(`Request failed with status ${response.status}: ${response.statusText}`);
   }
 
-  // Handle 204 No Content or empty responses
-  if (response.status === 204) {
-    return null;
-  }
-
-  return await response.json();
+  const data = response.status === 204 ? null : await response.json();
+  return { data, status: response.status };
 }
 
 /**
@@ -116,7 +113,7 @@ async function loadNotes() {
   setButtonsDisabled(true);
 
   try {
-    const notes = await request(`${API_URL}?_limit=10`, { method: 'GET' });
+    const { data: notes } = await request(`${API_URL}?_limit=10`, { method: 'GET' });
 
     notesList.textContent = '';
 
@@ -127,8 +124,7 @@ async function loadNotes() {
     }
 
     notes.forEach(note => {
-      const noteElement = createNoteElement(note);
-      notesList.appendChild(noteElement);
+      notesList.appendChild(createNoteElement(note));
     });
 
     setStatus('success', `Loaded ${notes.length} notes from the server.`);
@@ -140,7 +136,8 @@ async function loadNotes() {
 }
 
 /**
- * POST: Validates input and creates a new note.
+ * POST: Validates input, creates a note, prepends it, and reports status code and new ID.
+ * @param {SubmitEvent} event 
  */
 async function createNote(event) {
   event.preventDefault();
@@ -148,7 +145,7 @@ async function createNote(event) {
   const title = titleInput.value.trim();
   const body = bodyInput.value.trim();
 
-  // Validation: Required and max 100 characters
+  // Validation: Required and max 100 characters (body is optional)
   if (!title) {
     setStatus('error', 'Validation error: Title is required.');
     titleInput.focus();
@@ -162,11 +159,11 @@ async function createNote(event) {
   }
 
   setStatus('loading', 'Creating note...');
-  setButtonsDisabled(true);
+  submitBtn.disabled = true;
 
   try {
     const payload = { title, body, userId: 1 };
-    const createdNote = await request(API_URL, {
+    const { data: createdNote, status } = await request(API_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json; charset=UTF-8'
@@ -174,23 +171,23 @@ async function createNote(event) {
       body: JSON.stringify(payload)
     });
 
-    // Remove empty-state placeholder if present
+    // Remove empty state message if present
     const emptyPlaceholder = notesList.querySelector('.empty-state');
     if (emptyPlaceholder) {
       emptyPlaceholder.remove();
     }
 
-    // Insert new note at the top of the list
+    // Prepend new note to the top of the list
     const noteElement = createNoteElement(createdNote);
     notesList.prepend(noteElement);
 
-    // Reset form inputs
+    // Reset the form fields and show formatted success text
     noteForm.reset();
-    setStatus('success', `Note "${createdNote.title}" created successfully.`);
+    setStatus('success', `Note created (status ${status}, id ${createdNote.id}).`);
   } catch (error) {
     setStatus('error', 'Failed to create note. Please try again.');
   } finally {
-    setButtonsDisabled(false);
+    submitBtn.disabled = false;
   }
 }
 
@@ -208,7 +205,6 @@ async function deleteNote(id, noteElement) {
 
     noteElement.remove();
 
-    // Check if the list became empty after removal
     if (notesList.children.length === 0) {
       renderEmptyState('No notes remaining.');
     }
